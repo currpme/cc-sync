@@ -48,12 +48,11 @@ func (a *ClaudeAdapter) Scan(cfg model.AppConfig) (model.Snapshot, error) {
 				s.Items = append(s.Items, model.ManagedItem{
 					Tool:    a.Name(),
 					Type:    model.ItemConfig,
-					ID:      fmt.Sprintf("%s:%s", a.Name(), model.ItemConfig),
+					ID:      fmt.Sprintf("%s:%s:%s", a.Name(), model.ItemConfig, filepath.ToSlash(filepath.Join("config", name))),
 					RelPath: filepath.ToSlash(filepath.Join("config", name)),
 					Content: content,
 					Hash:    fileHash(content),
 				})
-				break
 			}
 		}
 	}
@@ -148,43 +147,54 @@ func (a *ClaudeAdapter) Apply(items []model.ManagedItem, cfg model.AppConfig) er
 		return err
 	}
 	for _, item := range items {
-		switch item.Type {
-		case model.ItemConfig:
-			targetName := filepath.Base(item.RelPath)
-			target := filepath.Join(a.baseDir, targetName)
-			if err := writeManagedConfig(target, item.Content); err != nil {
-				return err
-			}
-		case model.ItemUserSkill:
-			target := filepath.Join(a.baseDir, "skills", strings.TrimPrefix(item.RelPath, "skills/user/"))
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(target, item.Content, 0o644); err != nil {
-				return err
-			}
-		case model.ItemProjectSkill:
-			if item.ProjectRef == "" {
-				continue
-			}
-			prefix := filepath.ToSlash(filepath.Join("skills", "projects", encodeProjectRef(item.ProjectRef))) + "/"
-			rel := strings.TrimPrefix(item.RelPath, prefix)
-			target := filepath.Join(item.ProjectRef, ".claude", "skills", rel)
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(target, item.Content, 0o644); err != nil {
-				return err
-			}
-		case model.ItemMCP:
-			target := filepath.Join(a.baseDir, strings.TrimPrefix(item.RelPath, "mcp/"))
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(target, item.Content, 0o644); err != nil {
-				return err
-			}
+		if err := a.WriteItem(item, cfg); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (a *ClaudeAdapter) WriteItem(item model.ManagedItem, cfg model.AppConfig) error {
+	target, ok := a.targetPath(item)
+	if !ok {
+		return nil
+	}
+	if item.Type == model.ItemConfig {
+		return writeManagedConfig(target, item.Content)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(target, item.Content, 0o644)
+}
+
+func (a *ClaudeAdapter) DeleteItem(item model.ManagedItem, cfg model.AppConfig) error {
+	target, ok := a.targetPath(item)
+	if !ok {
+		return nil
+	}
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (a *ClaudeAdapter) targetPath(item model.ManagedItem) (string, bool) {
+	switch item.Type {
+	case model.ItemConfig:
+		return filepath.Join(a.baseDir, filepath.Base(item.RelPath)), true
+	case model.ItemUserSkill:
+		return filepath.Join(a.baseDir, "skills", strings.TrimPrefix(item.RelPath, "skills/user/")), true
+	case model.ItemProjectSkill:
+		if item.ProjectRef == "" {
+			return "", false
+		}
+		prefix := filepath.ToSlash(filepath.Join("skills", "projects", encodeProjectRef(item.ProjectRef))) + "/"
+		rel := strings.TrimPrefix(item.RelPath, prefix)
+		return filepath.Join(item.ProjectRef, ".claude", "skills", rel), true
+	case model.ItemMCP:
+		return filepath.Join(a.baseDir, strings.TrimPrefix(item.RelPath, "mcp/")), true
+	default:
+		return "", false
+	}
 }

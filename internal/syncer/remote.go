@@ -54,8 +54,24 @@ func (s *RemoteStore) Load(ctx context.Context, tool string) (model.Snapshot, er
 }
 
 func (s *RemoteStore) Save(ctx context.Context, snapshot model.Snapshot) error {
+	current, err := s.Load(ctx, snapshot.Tool)
+	if err != nil {
+		return err
+	}
 	for _, item := range snapshot.Items {
 		if err := s.client.WriteFile(ctx, s.itemPath(snapshot.Tool, item.RelPath), item.Content); err != nil {
+			return err
+		}
+	}
+	keep := make(map[string]bool, len(snapshot.Items))
+	for _, item := range snapshot.Items {
+		keep[item.RelPath] = true
+	}
+	for _, item := range current.Items {
+		if keep[item.RelPath] {
+			continue
+		}
+		if err := s.client.DeleteFile(ctx, s.itemPath(snapshot.Tool, item.RelPath)); err != nil {
 			return err
 		}
 	}
@@ -63,9 +79,26 @@ func (s *RemoteStore) Save(ctx context.Context, snapshot model.Snapshot) error {
 	for i := range manifest.Items {
 		manifest.Items[i].Content = nil
 	}
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
+	data, marshalErr := json.MarshalIndent(manifest, "", "  ")
+	if marshalErr != nil {
+		return marshalErr
+	}
+	if err := s.client.WriteFile(ctx, s.manifestPath(snapshot.Tool), data); err != nil {
 		return err
 	}
-	return s.client.WriteFile(ctx, s.manifestPath(snapshot.Tool), data)
+	for _, item := range current.Items {
+		if keep[item.RelPath] {
+			continue
+		}
+		item.Content = nil
+	}
+	return nil
+}
+
+func (s *RemoteStore) WriteItem(ctx context.Context, tool string, item model.ManagedItem) error {
+	return s.client.WriteFile(ctx, s.itemPath(tool, item.RelPath), item.Content)
+}
+
+func (s *RemoteStore) DeleteItem(ctx context.Context, tool string, item model.ManagedItem) error {
+	return s.client.DeleteFile(ctx, s.itemPath(tool, item.RelPath))
 }

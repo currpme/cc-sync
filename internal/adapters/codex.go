@@ -37,7 +37,7 @@ func (a *CodexAdapter) Scan(cfg model.AppConfig) (model.Snapshot, error) {
 			s.Items = append(s.Items, model.ManagedItem{
 				Tool:    a.Name(),
 				Type:    model.ItemConfig,
-				ID:      fmt.Sprintf("%s:%s", a.Name(), model.ItemConfig),
+				ID:      fmt.Sprintf("%s:%s:%s", a.Name(), model.ItemConfig, "config/config.toml"),
 				RelPath: "config/config.toml",
 				Content: content,
 				Hash:    fileHash(content),
@@ -141,42 +141,54 @@ func (a *CodexAdapter) Apply(items []model.ManagedItem, cfg model.AppConfig) err
 		return err
 	}
 	for _, item := range items {
-		switch item.Type {
-		case model.ItemConfig:
-			target := filepath.Join(a.baseDir, "config.toml")
-			if err := writeManagedConfig(target, item.Content); err != nil {
-				return err
-			}
-		case model.ItemUserSkill:
-			target := filepath.Join(a.baseDir, "skills", strings.TrimPrefix(item.RelPath, "skills/user/"))
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(target, item.Content, 0o644); err != nil {
-				return err
-			}
-		case model.ItemProjectSkill:
-			if item.ProjectRef == "" {
-				continue
-			}
-			prefix := filepath.ToSlash(filepath.Join("skills", "projects", encodeProjectRef(item.ProjectRef))) + "/"
-			rel := strings.TrimPrefix(item.RelPath, prefix)
-			target := filepath.Join(item.ProjectRef, ".codex", "skills", rel)
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(target, item.Content, 0o644); err != nil {
-				return err
-			}
-		case model.ItemMCP:
-			target := filepath.Join(a.baseDir, strings.TrimPrefix(item.RelPath, "mcp/"))
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(target, item.Content, 0o644); err != nil {
-				return err
-			}
+		if err := a.WriteItem(item, cfg); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (a *CodexAdapter) WriteItem(item model.ManagedItem, cfg model.AppConfig) error {
+	target, ok := a.targetPath(item)
+	if !ok {
+		return nil
+	}
+	if item.Type == model.ItemConfig {
+		return writeManagedConfig(target, item.Content)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(target, item.Content, 0o644)
+}
+
+func (a *CodexAdapter) DeleteItem(item model.ManagedItem, cfg model.AppConfig) error {
+	target, ok := a.targetPath(item)
+	if !ok {
+		return nil
+	}
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (a *CodexAdapter) targetPath(item model.ManagedItem) (string, bool) {
+	switch item.Type {
+	case model.ItemConfig:
+		return filepath.Join(a.baseDir, "config.toml"), true
+	case model.ItemUserSkill:
+		return filepath.Join(a.baseDir, "skills", strings.TrimPrefix(item.RelPath, "skills/user/")), true
+	case model.ItemProjectSkill:
+		if item.ProjectRef == "" {
+			return "", false
+		}
+		prefix := filepath.ToSlash(filepath.Join("skills", "projects", encodeProjectRef(item.ProjectRef))) + "/"
+		rel := strings.TrimPrefix(item.RelPath, prefix)
+		return filepath.Join(item.ProjectRef, ".codex", "skills", rel), true
+	case model.ItemMCP:
+		return filepath.Join(a.baseDir, strings.TrimPrefix(item.RelPath, "mcp/")), true
+	default:
+		return "", false
+	}
 }

@@ -24,6 +24,8 @@ type SyncConfig struct {
 	ManageUserSkills    bool
 	ManageProjectSkills bool
 	ManageMCP           bool
+	DefaultMode         string
+	AllowDelete         bool
 }
 
 type ScanConfig struct {
@@ -31,7 +33,7 @@ type ScanConfig struct {
 }
 
 type ConflictConfig struct {
-	DefaultMode string
+	DefaultResolution string
 }
 
 type ItemType string

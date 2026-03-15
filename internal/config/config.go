@@ -27,9 +27,11 @@ func DefaultConfig() model.AppConfig {
 			ManageUserSkills:    true,
 			ManageProjectSkills: true,
 			ManageMCP:           true,
+			DefaultMode:         "preview",
+			AllowDelete:         false,
 		},
 		Scan:     model.ScanConfig{},
-		Conflict: model.ConflictConfig{DefaultMode: "prompt"},
+		Conflict: model.ConflictConfig{DefaultResolution: "prompt"},
 	}
 }
 
@@ -87,14 +89,21 @@ func Load(path string) (model.AppConfig, error) {
 				cfg.Sync.ManageProjectSkills = parseBool(val)
 			case "manage_mcp":
 				cfg.Sync.ManageMCP = parseBool(val)
+			case "default_mode":
+				cfg.Sync.DefaultMode = parseString(val)
+			case "allow_delete":
+				cfg.Sync.AllowDelete = parseBool(val)
 			}
 		case "scan":
 			if key == "project_roots" {
 				cfg.Scan.ProjectRoots = parseArray(val)
 			}
 		case "conflict":
-			if key == "default_mode" {
-				cfg.Conflict.DefaultMode = parseString(val)
+			switch key {
+			case "default_mode":
+				cfg.Conflict.DefaultResolution = parseString(val)
+			case "default_resolution":
+				cfg.Conflict.DefaultResolution = parseString(val)
 			}
 		}
 	}
@@ -116,6 +125,10 @@ func Save(path string, cfg model.AppConfig) error {
 	if err := EnsureDir(path); err != nil {
 		return err
 	}
+	return os.WriteFile(path, []byte(Render(cfg)), 0o600)
+}
+
+func Render(cfg model.AppConfig) string {
 	content := fmt.Sprintf(`[webdav]
 url = %s
 username = %s
@@ -130,12 +143,14 @@ manage_config = %t
 manage_user_skills = %t
 manage_project_skills = %t
 manage_mcp = %t
+default_mode = %s
+allow_delete = %t
 
 [scan]
 project_roots = %s
 
 [conflict]
-default_mode = %s
+default_resolution = %s
 `,
 		quote(cfg.WebDAV.URL),
 		quote(cfg.WebDAV.Username),
@@ -146,10 +161,12 @@ default_mode = %s
 		cfg.Sync.ManageUserSkills,
 		cfg.Sync.ManageProjectSkills,
 		cfg.Sync.ManageMCP,
+		quote(cfg.Sync.DefaultMode),
+		cfg.Sync.AllowDelete,
 		quoteArray(cfg.Scan.ProjectRoots),
-		quote(cfg.Conflict.DefaultMode),
+		quote(cfg.Conflict.DefaultResolution),
 	)
-	return os.WriteFile(path, []byte(content), 0o600)
+	return content
 }
 
 func parseString(v string) string {

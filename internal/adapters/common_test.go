@@ -16,6 +16,17 @@ func TestSanitizeConfig(t *testing.T) {
 	}
 }
 
+func TestSanitizeConfigPreservesNonSensitiveTokenFields(t *testing.T) {
+	raw := []byte("{\"token_limit\":8192,\"token\":\"secret\",\"model\":\"gpt-5\"}")
+	out := string(sanitizeConfig(raw))
+	if strings.Contains(out, "\"token\":") {
+		t.Fatalf("expected sensitive token field to be removed: %q", out)
+	}
+	if !strings.Contains(out, "\"token_limit\": 8192") || !strings.Contains(out, "\"model\": \"gpt-5\"") {
+		t.Fatalf("expected non-sensitive fields to remain: %q", out)
+	}
+}
+
 func TestMergeTOMLPreservesUnmanagedKeys(t *testing.T) {
 	existing := []byte("model = \"old\"\ncustom = true\n[projects.\"/tmp/demo\"]\ntrust_level = \"trusted\"\n")
 	incoming := []byte("model = \"new\"\n")

@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,25 +25,41 @@ type BuildInfo struct {
 	Date    string
 }
 
+type options struct {
+	configPath        string
+	effectiveConfig   string
+	tool              string
+	format            string
+	prefer            string
+	planOnly          bool
+	yes               bool
+	allowDelete       bool
+	allowDeleteSet    bool
+	noDelete          bool
+	showHelp          bool
+}
+
 func Run(args []string, info BuildInfo) error {
 	if len(args) == 0 {
 		return usage()
 	}
 	switch args[0] {
+	case "help", "--help", "-h":
+		return usage()
 	case "init":
 		return cmdInit(args[1:])
 	case "scan":
-		return withConfig(args[1:], cmdScan)
+		return withConfig(args[1:], parseScanOptions, cmdScan)
 	case "diff":
-		return withConfig(args[1:], cmdDiff)
+		return withConfig(args[1:], parseToolOptions, cmdDiff)
 	case "push":
-		return withConfig(args[1:], cmdPush)
+		return withConfig(args[1:], parseToolOptions, cmdPush)
 	case "pull":
-		return withConfig(args[1:], cmdPull)
+		return withConfig(args[1:], parseToolOptions, cmdPull)
 	case "sync":
-		return withConfig(args[1:], cmdSync)
+		return withConfig(args[1:], parseSyncOptions, cmdSync)
 	case "doctor":
-		return withConfig(args[1:], cmdDoctor)
+		return withConfig(args[1:], parseToolOptions, cmdDoctor)
 	case "version":
 		return cmdVersion(info)
 	default:
@@ -50,60 +68,45 @@ func Run(args []string, info BuildInfo) error {
 }
 
 func usage() error {
-	return errors.New("usage: ccsync <init|scan|diff|push|pull|sync|doctor|version> [--config path] [--tool codex|claude|all]")
+	return errors.New("usage: ccsync <init|scan|diff|push|pull|sync|doctor|version> [flags]")
 }
 
-func withConfig(args []string, fn func(model.AppConfig, options) error) error {
-	opts := parseOptions(args)
+func withConfig(args []string, parse func([]string) (options, error), fn func(model.AppConfig, options) error) error {
+	opts, err := parse(args)
+	if err != nil {
+		return err
+	}
+	if opts.showHelp {
+		return nil
+	}
 	cfgPath := opts.configPath
 	if cfgPath == "" {
 		cfgPath = config.DefaultPath()
 	}
-	cfg, err := loadConfigOrDefault(cfgPath)
+	opts.effectiveConfig = cfgPath
+	cfg, migrated, err := loadConfigOrDefault(cfgPath)
 	if err != nil {
 		return err
+	}
+	if migrated {
+		if err := config.Save(cfgPath, cfg); err != nil {
+			return fmt.Errorf("migrate config %s: %w", cfgPath, err)
+		}
+	}
+	if !opts.allowDeleteSet {
+		opts.allowDelete = cfg.Sync.AllowDelete
 	}
 	return fn(cfg, opts)
 }
 
-type options struct {
-	configPath string
-	tool       string
-	format     string
-	prefer     string
-}
-
-func parseOptions(args []string) options {
-	opts := options{tool: "all", format: "table"}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--config":
-			if i+1 < len(args) {
-				i++
-				opts.configPath = args[i]
-			}
-		case "--tool":
-			if i+1 < len(args) {
-				i++
-				opts.tool = args[i]
-			}
-		case "--format":
-			if i+1 < len(args) {
-				i++
-				opts.format = args[i]
-			}
-		case "--prefer":
-			if i+1 < len(args) {
-				i++
-				opts.prefer = args[i]
-			}
-		}
-	}
-	return opts
-}
-
 func cmdInit(args []string) error {
-	opts := parseOptions(args)
+	opts, err := parseInitOptions(args)
+	if err != nil {
+		return err
+	}
+	if opts.showHelp {
+		return nil
+	}
 	cfgPath := opts.configPath
 	if cfgPath == "" {
 		cfgPath = config.DefaultPath()
@@ -192,14 +195,19 @@ func cmdPull(cfg model.AppConfig, opts options) error {
 	}
 	ctx := context.Background()
 	for _, adapter := range selectedAdapters(opts.tool) {
-		snapshot, err := store.Load(ctx, adapter.Name())
+		localSnap, err := adapter.Scan(cfg)
 		if err != nil {
 			return err
 		}
-		if err := adapter.Apply(snapshot.Items, cfg); err != nil {
+		remoteSnap, err := store.Load(ctx, adapter.Name())
+		if err != nil {
 			return err
 		}
-		fmt.Printf("pulled %s (%d items)\n", adapter.Name(), len(snapshot.Items))
+		plan := syncer.BuildPlan(localSnap, remoteSnap, "remote", true)
+		if err := applyLocalPlan(adapter, cfg, plan); err != nil {
+			return err
+		}
+		fmt.Printf("pulled %s (%d actions)\n", adapter.Name(), countPlanActions(plan))
 	}
 	return nil
 }
@@ -211,6 +219,10 @@ func cmdSync(cfg model.AppConfig, opts options) error {
 	}
 	ctx := context.Background()
 	reader := bufio.NewReader(os.Stdin)
+	if !opts.planOnly && strings.TrimSpace(cfg.Sync.DefaultMode) == "plan" {
+		opts.planOnly = true
+	}
+	conflictMode := normalizeConflictMode(opts.prefer, cfg)
 	for _, adapter := range selectedAdapters(opts.tool) {
 		localSnap, err := adapter.Scan(cfg)
 		if err != nil {
@@ -220,51 +232,39 @@ func cmdSync(cfg model.AppConfig, opts options) error {
 		if err != nil {
 			return err
 		}
-		diff := syncer.BuildDiff(localSnap, remoteSnap)
-		conflicts := countConflicts(diff)
-		if conflicts == 0 {
-			if len(localSnap.Items) >= len(remoteSnap.Items) {
-				if err := store.Save(ctx, localSnap); err != nil {
-					return err
-				}
-				fmt.Printf("synced %s by push\n", adapter.Name())
-			} else {
-				if err := adapter.Apply(remoteSnap.Items, cfg); err != nil {
-					return err
-				}
-				fmt.Printf("synced %s by pull\n", adapter.Name())
-			}
+		plan := syncer.BuildPlan(localSnap, remoteSnap, conflictMode, opts.allowDelete)
+		fmt.Println(syncer.RenderPlan(adapter.Name(), plan))
+		if opts.planOnly {
 			continue
 		}
-		action := opts.prefer
-		if action == "" {
-			action = strings.TrimSpace(cfg.Conflict.DefaultMode)
+
+		applyNonConflict := opts.yes
+		if !opts.yes {
+			applyNonConflict = confirm(reader, "apply non-conflict actions [y/N]: ")
 		}
-		if action == "" || action == "prompt" {
-			fmt.Println(syncer.RenderDiff(adapter.Name(), diff))
-			fmt.Printf("conflicts found for %s. choose [local/remote/skip]: ", adapter.Name())
-			action = strings.TrimSpace(readLine(reader))
-		}
-		switch action {
-		case "local", "push":
-			if err := store.Save(ctx, localSnap); err != nil {
-				return err
-			}
-			fmt.Printf("synced %s by push\n", adapter.Name())
-		case "remote", "pull":
-			if err := adapter.Apply(remoteSnap.Items, cfg); err != nil {
-				return err
-			}
-			fmt.Printf("synced %s by pull\n", adapter.Name())
-		default:
+		if !applyNonConflict {
 			fmt.Printf("skipped %s\n", adapter.Name())
+			continue
 		}
+
+		selected := chooseSyncActions(plan, conflictMode, opts.yes, reader)
+		selected = maybeConfirmDeletes(selected, opts.yes, reader)
+		remoteTarget, remoteDirty, err := applySelectedActions(adapter, cfg, remoteSnap, selected)
+		if err != nil {
+			return err
+		}
+		if remoteDirty {
+			if err := store.Save(ctx, remoteTarget); err != nil {
+				return err
+			}
+		}
+		fmt.Printf("synced %s (%d actions)\n", adapter.Name(), countChosenActions(selected))
 	}
 	return nil
 }
 
 func cmdDoctor(cfg model.AppConfig, opts options) error {
-	fmt.Println("config:", config.DefaultPath())
+	fmt.Println("config:", opts.effectiveConfig)
 	for _, adapter := range selectedAdapters(opts.tool) {
 		state := "missing"
 		if adapter.Exists() {
@@ -272,6 +272,12 @@ func cmdDoctor(cfg model.AppConfig, opts options) error {
 		}
 		fmt.Printf("%s: %s (%s)\n", adapter.Name(), state, adapter.BaseDir())
 	}
+	if len(cfg.Scan.ProjectRoots) == 0 {
+		fmt.Println("project_roots: (none)")
+	} else {
+		fmt.Printf("project_roots: %s\n", strings.Join(cfg.Scan.ProjectRoots, ", "))
+	}
+	fmt.Printf("remote_root: %s\n", cfg.Remote.Root)
 	if cfg.WebDAV.URL == "" {
 		fmt.Println("webdav: missing url")
 		return nil
@@ -279,7 +285,7 @@ func cmdDoctor(cfg model.AppConfig, opts options) error {
 	client := webdav.New(cfg.WebDAV.URL, cfg.WebDAV.Username, cfg.WebDAV.Password)
 	ok, err := client.Stat(context.Background(), cfg.Remote.Root)
 	if err != nil {
-		fmt.Println("webdav:", err)
+		fmt.Println("webdav connect:", err)
 		return nil
 	}
 	if ok {
@@ -297,15 +303,19 @@ func cmdVersion(info BuildInfo) error {
 	return nil
 }
 
-func loadConfigOrDefault(path string) (model.AppConfig, error) {
+func loadConfigOrDefault(path string) (model.AppConfig, bool, error) {
 	cfg, err := config.Load(path)
 	if err == nil {
-		return cfg, nil
+		raw, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return cfg, false, nil
+		}
+		return cfg, strings.TrimSpace(string(raw)) != strings.TrimSpace(config.Render(cfg)), nil
 	}
 	if os.IsNotExist(err) {
-		return config.DefaultConfig(), nil
+		return config.DefaultConfig(), false, nil
 	}
-	return cfg, fmt.Errorf("load %s: %w", path, err)
+	return cfg, false, fmt.Errorf("load %s: %w", path, err)
 }
 
 func remoteStore(cfg model.AppConfig) (*syncer.RemoteStore, error) {
@@ -333,10 +343,168 @@ func selectedAdapters(tool string) []adapters.Adapter {
 	return filtered
 }
 
-func countConflicts(entries []syncer.DiffEntry) int {
+func normalizeConflictMode(prefer string, cfg model.AppConfig) string {
+	if prefer != "" {
+		return prefer
+	}
+	mode := strings.TrimSpace(cfg.Conflict.DefaultResolution)
+	if mode == "" || mode == "prompt" {
+		return ""
+	}
+	return mode
+}
+
+func applyLocalPlan(adapter adapters.Adapter, cfg model.AppConfig, plan []syncer.PlanEntry) error {
+	for _, entry := range plan {
+		switch entry.Action {
+		case syncer.ActionPullCreate, syncer.ActionPullUpdate:
+			if entry.Remote == nil {
+				continue
+			}
+			if err := adapter.WriteItem(*entry.Remote, cfg); err != nil {
+				return err
+			}
+		case syncer.ActionDeleteLocal:
+			if entry.Local == nil {
+				continue
+			}
+			if err := adapter.DeleteItem(*entry.Local, cfg); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func chooseSyncActions(plan []syncer.PlanEntry, conflictMode string, autoApprove bool, reader *bufio.Reader) []syncer.PlanEntry {
+	selected := make([]syncer.PlanEntry, 0, len(plan))
+	for _, entry := range plan {
+		switch entry.Action {
+		case syncer.ActionConflict:
+			if conflictMode == "local" || conflictMode == "push" {
+				entry.Action = syncer.ActionPushUpdate
+			} else if conflictMode == "remote" || conflictMode == "pull" {
+				entry.Action = syncer.ActionPullUpdate
+			} else if autoApprove {
+				entry.Action = syncer.ActionSkip
+			} else {
+				choice := strings.TrimSpace(strings.ToLower(readLineWithPrompt(reader, fmt.Sprintf("conflict %s [local/remote/skip]: ", entry.Path))))
+				switch choice {
+				case "local", "push":
+					entry.Action = syncer.ActionPushUpdate
+				case "remote", "pull":
+					entry.Action = syncer.ActionPullUpdate
+				default:
+					entry.Action = syncer.ActionSkip
+				}
+			}
+		}
+		selected = append(selected, entry)
+	}
+	return selected
+}
+
+func maybeConfirmDeletes(plan []syncer.PlanEntry, autoApprove bool, reader *bufio.Reader) []syncer.PlanEntry {
+	if autoApprove {
+		return plan
+	}
+	hasDelete := false
+	for _, entry := range plan {
+		if entry.Action == syncer.ActionDeleteLocal || entry.Action == syncer.ActionDeleteRemote {
+			hasDelete = true
+			break
+		}
+	}
+	if !hasDelete {
+		return plan
+	}
+	if confirm(reader, "apply delete actions [y/N]: ") {
+		return plan
+	}
+	out := make([]syncer.PlanEntry, 0, len(plan))
+	for _, entry := range plan {
+		if entry.Action == syncer.ActionDeleteLocal || entry.Action == syncer.ActionDeleteRemote {
+			entry.Action = syncer.ActionSkip
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func applySelectedActions(adapter adapters.Adapter, cfg model.AppConfig, remoteSnap model.Snapshot, plan []syncer.PlanEntry) (model.Snapshot, bool, error) {
+	remoteTarget := cloneSnapshot(remoteSnap)
+	remoteDirty := false
+	for _, entry := range plan {
+		switch entry.Action {
+		case syncer.ActionPushCreate, syncer.ActionPushUpdate:
+			if entry.Local == nil {
+				continue
+			}
+			upsertItem(&remoteTarget, *entry.Local)
+			remoteDirty = true
+		case syncer.ActionPullCreate, syncer.ActionPullUpdate:
+			if entry.Remote == nil {
+				continue
+			}
+			if err := adapter.WriteItem(*entry.Remote, cfg); err != nil {
+				return remoteTarget, remoteDirty, err
+			}
+		case syncer.ActionDeleteRemote:
+			removeItem(&remoteTarget, entry.ID)
+			remoteDirty = true
+		case syncer.ActionDeleteLocal:
+			if entry.Local == nil {
+				continue
+			}
+			if err := adapter.DeleteItem(*entry.Local, cfg); err != nil {
+				return remoteTarget, remoteDirty, err
+			}
+		}
+	}
+	return remoteTarget, remoteDirty, nil
+}
+
+func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
+	out := model.Snapshot{Tool: snapshot.Tool, Items: make([]model.ManagedItem, len(snapshot.Items))}
+	copy(out.Items, snapshot.Items)
+	return out
+}
+
+func upsertItem(snapshot *model.Snapshot, item model.ManagedItem) {
+	for i := range snapshot.Items {
+		if snapshot.Items[i].ID == item.ID {
+			snapshot.Items[i] = item
+			return
+		}
+	}
+	snapshot.Items = append(snapshot.Items, item)
+}
+
+func removeItem(snapshot *model.Snapshot, id string) {
+	filtered := snapshot.Items[:0]
+	for _, item := range snapshot.Items {
+		if item.ID == id {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	snapshot.Items = filtered
+}
+
+func countPlanActions(plan []syncer.PlanEntry) int {
 	count := 0
-	for _, entry := range entries {
-		if entry.Status == syncer.StatusConflict {
+	for _, entry := range plan {
+		if entry.Action != syncer.ActionNone {
+			count++
+		}
+	}
+	return count
+}
+
+func countChosenActions(plan []syncer.PlanEntry) int {
+	count := 0
+	for _, entry := range plan {
+		if entry.Action != syncer.ActionNone && entry.Action != syncer.ActionSkip && entry.Action != syncer.ActionConflict {
 			count++
 		}
 	}
@@ -346,6 +514,16 @@ func countConflicts(entries []syncer.DiffEntry) int {
 func readLine(reader *bufio.Reader) string {
 	line, _ := reader.ReadString('\n')
 	return strings.TrimSpace(line)
+}
+
+func readLineWithPrompt(reader *bufio.Reader, prompt string) string {
+	fmt.Print(prompt)
+	return readLine(reader)
+}
+
+func confirm(reader *bufio.Reader, prompt string) bool {
+	answer := strings.ToLower(strings.TrimSpace(readLineWithPrompt(reader, prompt)))
+	return answer == "y" || answer == "yes"
 }
 
 func splitCSV(raw string) []string {
@@ -363,4 +541,125 @@ func splitCSV(raw string) []string {
 		out = append(out, part)
 	}
 	return out
+}
+
+func parseInitOptions(args []string) (options, error) {
+	return parseFlagOptions("init", args, true, false, false)
+}
+
+func parseScanOptions(args []string) (options, error) {
+	return parseFlagOptions("scan", args, true, true, false)
+}
+
+func parseToolOptions(args []string) (options, error) {
+	return parseFlagOptions("tool", args, true, false, false)
+}
+
+func parseSyncOptions(args []string) (options, error) {
+	return parseFlagOptions("sync", args, true, false, true)
+}
+
+func parseFlagOptions(name string, args []string, withTool bool, withFormat bool, withSync bool) (options, error) {
+	opts := options{tool: "all", format: "table"}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&opts.configPath, "config", "", "config path")
+	if withTool {
+		fs.StringVar(&opts.tool, "tool", "all", "tool")
+	}
+	if withFormat {
+		fs.StringVar(&opts.format, "format", "table", "format")
+	}
+	if withSync {
+		fs.StringVar(&opts.prefer, "prefer", "", "prefer local or remote")
+		fs.BoolVar(&opts.planOnly, "plan", false, "show plan only")
+		fs.BoolVar(&opts.yes, "yes", false, "apply without confirmation")
+		fs.BoolVar(&opts.allowDelete, "allow-delete", false, "allow delete actions")
+		fs.BoolVar(&opts.noDelete, "no-delete", false, "disable delete actions")
+	}
+	fs.BoolVar(&opts.showHelp, "help", false, "help")
+	fs.BoolVar(&opts.showHelp, "h", false, "help")
+	if err := fs.Parse(args); err != nil {
+		return opts, invalidUsage(name, err)
+	}
+	if opts.showHelp {
+		printCommandUsage(name, withTool, withFormat, withSync)
+		return opts, nil
+	}
+	if fs.NArg() != 0 {
+		return opts, invalidUsage(name, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " ")))
+	}
+	if withTool && !isValidTool(opts.tool) {
+		return opts, invalidUsage(name, fmt.Errorf("invalid --tool: %s", opts.tool))
+	}
+	if withFormat && opts.format != "table" && opts.format != "json" {
+		return opts, invalidUsage(name, fmt.Errorf("invalid --format: %s", opts.format))
+	}
+	if withSync && !isValidPrefer(opts.prefer) {
+		return opts, invalidUsage(name, fmt.Errorf("invalid --prefer: %s", opts.prefer))
+	}
+	if withSync {
+		if opts.allowDelete && opts.noDelete {
+			return opts, invalidUsage(name, errors.New("cannot use --allow-delete and --no-delete together"))
+		}
+		if opts.allowDelete || opts.noDelete {
+			opts.allowDeleteSet = true
+			if opts.noDelete {
+				opts.allowDelete = false
+			}
+		}
+	}
+	return opts, nil
+}
+
+func invalidUsage(name string, err error) error {
+	return fmt.Errorf("%w\n%s", err, commandUsage(name))
+}
+
+func commandUsage(name string) string {
+	switch name {
+	case "init":
+		return "usage: ccsync init [--config path]"
+	case "scan":
+		return "usage: ccsync scan [--config path] [--tool codex|claude|all] [--format table|json]"
+	case "sync":
+		return "usage: ccsync sync [--config path] [--tool codex|claude|all] [--prefer local|remote] [--plan] [--yes] [--allow-delete|--no-delete]"
+	default:
+		return fmt.Sprintf("usage: ccsync %s [--config path] [--tool codex|claude|all]", name)
+	}
+}
+
+func printCommandUsage(name string, withTool bool, withFormat bool, withSync bool) {
+	fmt.Println(commandUsage(name))
+	if withTool {
+		fmt.Println("  --tool codex|claude|all")
+	}
+	if withFormat {
+		fmt.Println("  --format table|json")
+	}
+	if withSync {
+		fmt.Println("  --prefer local|remote")
+		fmt.Println("  --plan")
+		fmt.Println("  --yes")
+		fmt.Println("  --allow-delete")
+		fmt.Println("  --no-delete")
+	}
+}
+
+func isValidTool(tool string) bool {
+	switch tool {
+	case "", "all", "codex", "claude":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidPrefer(prefer string) bool {
+	switch prefer {
+	case "", "local", "remote", "push", "pull":
+		return true
+	default:
+		return false
+	}
 }

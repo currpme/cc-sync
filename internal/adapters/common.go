@@ -19,6 +19,8 @@ type Adapter interface {
 	Name() string
 	Scan(cfg model.AppConfig) (model.Snapshot, error)
 	Apply(items []model.ManagedItem, cfg model.AppConfig) error
+	WriteItem(item model.ManagedItem, cfg model.AppConfig) error
+	DeleteItem(item model.ManagedItem, cfg model.AppConfig) error
 	Exists() bool
 	BaseDir() string
 }
@@ -49,20 +51,16 @@ func walkFiles(root string) ([]string, error) {
 }
 
 func sanitizeConfig(data []byte) []byte {
-	lines := strings.Split(string(data), "\n")
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		lower := strings.ToLower(strings.TrimSpace(line))
-		if strings.Contains(lower, "api_key") ||
-			strings.Contains(lower, "apikey") ||
-			strings.Contains(lower, "token") ||
-			strings.Contains(lower, "secret") ||
-			strings.Contains(lower, "password") {
-			continue
-		}
-		out = append(out, line)
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return []byte{}
 	}
-	return []byte(strings.TrimSpace(strings.Join(out, "\n")) + "\n")
+	if trimmed[0] == '{' {
+		if out, err := sanitizeJSON(data); err == nil {
+			return out
+		}
+	}
+	return sanitizeTOMLLike(data)
 }
 
 func isMCPFile(name string) bool {
@@ -95,6 +93,69 @@ func writeManagedConfig(target string, incoming []byte) error {
 		return err
 	}
 	return os.WriteFile(target, merged, 0o600)
+}
+
+func sanitizeJSON(data []byte) ([]byte, error) {
+	var payload interface{}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	sanitized := sanitizeJSONValue(payload)
+	out, err := json.MarshalIndent(sanitized, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, '\n'), nil
+}
+
+func sanitizeJSONValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, nested := range typed {
+			if isSensitiveKey(key) {
+				continue
+			}
+			out[key] = sanitizeJSONValue(nested)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, 0, len(typed))
+		for _, nested := range typed {
+			out = append(out, sanitizeJSONValue(nested))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func sanitizeTOMLLike(data []byte) []byte {
+	lines := strings.Split(string(data), "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		key, ok := parseAssignmentKey(trimmed)
+		if ok && isSensitiveKey(key) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.TrimSpace(strings.Join(out, "\n")) + "\n")
+}
+
+func isSensitiveKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if idx := strings.LastIndex(key, "."); idx >= 0 {
+		key = key[idx+1:]
+	}
+	key = strings.Trim(key, `"'`)
+	switch key {
+	case "api_key", "apikey", "token", "access_token", "auth_token", "password", "secret", "client_secret":
+		return true
+	default:
+		return false
+	}
 }
 
 func mergeManagedConfig(existing, incoming []byte, ext string) ([]byte, error) {

@@ -122,6 +122,25 @@ func (c *Client) WriteFile(ctx context.Context, remotePath string, data []byte) 
 	return nil
 }
 
+func (c *Client) DeleteFile(ctx context.Context, remotePath string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.join(remotePath), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("delete %s: %s", remotePath, resp.Status)
+	}
+	return nil
+}
+
 type propfindResponse struct {
 	XMLName   xml.Name       `xml:"multistatus"`
 	Responses []responseNode `xml:"response"`
