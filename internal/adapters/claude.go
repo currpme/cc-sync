@@ -41,19 +41,25 @@ func (a *ClaudeAdapter) Scan(cfg model.AppConfig) (model.Snapshot, error) {
 		return s, nil
 	}
 	if cfg.Sync.ManageConfig {
-		for _, name := range []string{"config.toml", "settings.json", "settings.toml"} {
-			configPath := filepath.Join(a.baseDir, name)
-			if data, err := os.ReadFile(configPath); err == nil {
-				content := sanitizeConfig(data)
-				s.Items = append(s.Items, model.ManagedItem{
-					Tool:    a.Name(),
-					Type:    model.ItemConfig,
-					ID:      fmt.Sprintf("%s:%s:%s", a.Name(), model.ItemConfig, filepath.ToSlash(filepath.Join("config", name))),
-					RelPath: filepath.ToSlash(filepath.Join("config", name)),
-					Content: content,
-					Hash:    fileHash(content),
-				})
+		configFiles, err := configCandidates(a.baseDir, claudeConfigBases)
+		if err != nil {
+			return s, err
+		}
+		for _, configPath := range configFiles {
+			data, err := os.ReadFile(configPath)
+			if err != nil {
+				return s, err
 			}
+			name := filepath.Base(configPath)
+			content := sanitizeConfig(data)
+			s.Items = append(s.Items, model.ManagedItem{
+				Tool:    a.Name(),
+				Type:    model.ItemConfig,
+				ID:      fmt.Sprintf("%s:%s:%s", a.Name(), model.ItemConfig, filepath.ToSlash(filepath.Join("config", name))),
+				RelPath: filepath.ToSlash(filepath.Join("config", name)),
+				Content: content,
+				Hash:    fileHash(content),
+			})
 		}
 	}
 	if cfg.Sync.ManageUserSkills {
@@ -182,7 +188,7 @@ func (a *ClaudeAdapter) DeleteItem(item model.ManagedItem, cfg model.AppConfig) 
 func (a *ClaudeAdapter) targetPath(item model.ManagedItem) (string, bool) {
 	switch item.Type {
 	case model.ItemConfig:
-		return filepath.Join(a.baseDir, filepath.Base(item.RelPath)), true
+		return filepath.Join(a.baseDir, filepath.Base(filepath.ToSlash(item.RelPath))), true
 	case model.ItemUserSkill:
 		return filepath.Join(a.baseDir, "skills", strings.TrimPrefix(item.RelPath, "skills/user/")), true
 	case model.ItemProjectSkill:

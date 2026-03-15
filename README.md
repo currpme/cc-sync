@@ -317,12 +317,14 @@ ccsync/
   codex/
     manifest.json
     config/config.toml
+    config/config.toml.bak
     skills/user/...
     skills/projects/<project-ref>/...
     mcp/...
   claude/
     manifest.json
     config/settings.json
+    config/settings.json.bak
     skills/user/...
     skills/projects/<project-ref>/...
     mcp/...
@@ -341,6 +343,7 @@ ccsync/
 默认处理：
 
 - `~/.codex/config.toml`
+- `~/.codex/config.toml.*` 这类派生配置文件，例如 `config.toml.bak`
 - `~/.codex/skills` 下的用户自定义内容
 - `~/.codex` 下文件名包含 `mcp` 的配置文件
 - 项目目录中的 `.codex/skills`
@@ -366,7 +369,7 @@ ccsync/
 
 默认处理：
 
-- 配置文件：`config.toml`、`settings.json`、`settings.toml` 之一
+- 配置文件：`config.toml`、`settings.json`、`settings.toml` 及其 `.*` 派生文件，例如 `settings.json.bak`
 - `skills/`
 - 文件名包含 `mcp` 的配置文件
 - 项目目录中的 `.claude/skills`

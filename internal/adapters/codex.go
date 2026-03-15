@@ -31,14 +31,22 @@ func (a *CodexAdapter) Scan(cfg model.AppConfig) (model.Snapshot, error) {
 		return s, nil
 	}
 	if cfg.Sync.ManageConfig {
-		configPath := filepath.Join(a.baseDir, "config.toml")
-		if data, err := os.ReadFile(configPath); err == nil {
+		configFiles, err := configCandidates(a.baseDir, codexConfigBases)
+		if err != nil {
+			return s, err
+		}
+		for _, configPath := range configFiles {
+			data, err := os.ReadFile(configPath)
+			if err != nil {
+				return s, err
+			}
+			name := filepath.Base(configPath)
 			content := sanitizeConfig(data)
 			s.Items = append(s.Items, model.ManagedItem{
 				Tool:    a.Name(),
 				Type:    model.ItemConfig,
-				ID:      fmt.Sprintf("%s:%s:%s", a.Name(), model.ItemConfig, "config/config.toml"),
-				RelPath: "config/config.toml",
+				ID:      fmt.Sprintf("%s:%s:%s", a.Name(), model.ItemConfig, filepath.ToSlash(filepath.Join("config", name))),
+				RelPath: filepath.ToSlash(filepath.Join("config", name)),
 				Content: content,
 				Hash:    fileHash(content),
 			})
@@ -176,7 +184,7 @@ func (a *CodexAdapter) DeleteItem(item model.ManagedItem, cfg model.AppConfig) e
 func (a *CodexAdapter) targetPath(item model.ManagedItem) (string, bool) {
 	switch item.Type {
 	case model.ItemConfig:
-		return filepath.Join(a.baseDir, "config.toml"), true
+		return filepath.Join(a.baseDir, filepath.Base(filepath.ToSlash(item.RelPath))), true
 	case model.ItemUserSkill:
 		return filepath.Join(a.baseDir, "skills", strings.TrimPrefix(item.RelPath, "skills/user/")), true
 	case model.ItemProjectSkill:

@@ -15,6 +15,11 @@ import (
 	"ccsync/internal/model"
 )
 
+var (
+	claudeConfigBases = []string{"config.toml", "settings.json", "settings.toml"}
+	codexConfigBases  = []string{"config.toml"}
+)
+
 type Adapter interface {
 	Name() string
 	Scan(cfg model.AppConfig) (model.Snapshot, error)
@@ -88,11 +93,61 @@ func writeManagedConfig(target string, incoming []byte) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	merged, err := mergeManagedConfig(existing, incoming, filepath.Ext(target))
+	merged, err := mergeManagedConfig(existing, incoming, configFormatExt(target))
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(target, merged, 0o600)
+}
+
+func configCandidates(baseDir string, baseNames []string) ([]string, error) {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !isManagedConfigName(name, baseNames) {
+			continue
+		}
+		files = append(files, filepath.Join(baseDir, name))
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func isManagedConfigName(name string, baseNames []string) bool {
+	lower := strings.ToLower(name)
+	for _, base := range baseNames {
+		baseLower := strings.ToLower(base)
+		if lower == baseLower || strings.HasPrefix(lower, baseLower+".") {
+			return true
+		}
+	}
+	return false
+}
+
+func configFormatExt(path string) string {
+	lower := strings.ToLower(filepath.Base(path))
+	switch {
+	case strings.HasPrefix(lower, "settings.json."):
+		return ".json"
+	case lower == "settings.json":
+		return ".json"
+	case strings.HasPrefix(lower, "config.toml."), strings.HasPrefix(lower, "settings.toml."):
+		return ".toml"
+	case lower == "config.toml", lower == "settings.toml":
+		return ".toml"
+	default:
+		return strings.ToLower(filepath.Ext(lower))
+	}
 }
 
 func sanitizeJSON(data []byte) ([]byte, error) {
