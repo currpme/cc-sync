@@ -57,6 +57,50 @@ go build ./cmd/ccsync
 /root/ccsync/ccsync
 ```
 
+查看版本信息：
+
+```bash
+./ccsync version
+```
+
+## 发布包构建
+
+项目内置了一个跨平台打包脚本，用来生成 GitHub Release 可直接上传的产物。
+
+发布构建建议使用 Go `1.22+`，与仓库 CI 保持一致。
+
+在项目目录下执行：
+
+```bash
+./scripts/build-release.sh 0.0.2
+```
+
+脚本会生成这些包：
+
+- Linux `amd64`
+- Linux `arm64`
+- macOS `amd64`
+- macOS `arm64`
+- Windows `amd64`
+- Windows `arm64`
+
+输出目录：
+
+```bash
+dist/0.0.2/
+```
+
+目录中会包含：
+
+- 每个平台对应的 `.tar.gz` 或 `.zip`
+- `checksums.txt`
+
+构建出的二进制可通过下面命令检查版本元数据：
+
+```bash
+./ccsync version
+```
+
 ## 快速开始
 
 ### 1. 初始化配置

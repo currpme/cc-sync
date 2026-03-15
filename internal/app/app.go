@@ -17,7 +17,13 @@ import (
 	"ccsync/internal/webdav"
 )
 
-func Run(args []string) error {
+type BuildInfo struct {
+	Version string
+	Commit  string
+	Date    string
+}
+
+func Run(args []string, info BuildInfo) error {
 	if len(args) == 0 {
 		return usage()
 	}
@@ -36,13 +42,15 @@ func Run(args []string) error {
 		return withConfig(args[1:], cmdSync)
 	case "doctor":
 		return withConfig(args[1:], cmdDoctor)
+	case "version":
+		return cmdVersion(info)
 	default:
 		return usage()
 	}
 }
 
 func usage() error {
-	return errors.New("usage: ccsync <init|scan|diff|push|pull|sync|doctor> [--config path] [--tool codex|claude|all]")
+	return errors.New("usage: ccsync <init|scan|diff|push|pull|sync|doctor|version> [--config path] [--tool codex|claude|all]")
 }
 
 func withConfig(args []string, fn func(model.AppConfig, options) error) error {
@@ -279,6 +287,13 @@ func cmdDoctor(cfg model.AppConfig, opts options) error {
 	} else {
 		fmt.Printf("webdav: root does not exist yet (%s)\n", cfg.Remote.Root)
 	}
+	return nil
+}
+
+func cmdVersion(info BuildInfo) error {
+	fmt.Printf("ccsync %s\n", info.Version)
+	fmt.Printf("commit: %s\n", info.Commit)
+	fmt.Printf("built: %s\n", info.Date)
 	return nil
 }
 
