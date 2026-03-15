@@ -72,7 +72,7 @@ go build ./cmd/ccsync
 在项目目录下执行：
 
 ```bash
-./scripts/build-release.sh 0.0.2
+./scripts/build-release.sh 0.0.5
 ```
 
 脚本会生成这些包：
@@ -87,7 +87,7 @@ go build ./cmd/ccsync
 输出目录：
 
 ```bash
-dist/0.0.2/
+dist/0.0.5/
 ```
 
 目录中会包含：
