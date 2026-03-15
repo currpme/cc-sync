@@ -174,6 +174,8 @@ dist/0.0.2/
 ./ccsync pull
 ```
 
+`pull` 会把远端托管内容同步回本地，并清理本地托管范围内已被远端删除的文件。
+
 ### 6. 查看本地与远端差异
 
 ```bash
@@ -186,11 +188,21 @@ dist/0.0.2/
 ./ccsync sync
 ```
 
-如需强制偏向本地或远端：
+默认行为：
+
+- 先输出按文件的同步计划
+- 先确认是否执行无冲突动作
+- 冲突按文件逐项选择 `local` / `remote` / `skip`
+- 删除动作需要单独确认
+
+常用模式：
 
 ```bash
+./ccsync sync --plan
 ./ccsync sync --prefer local
 ./ccsync sync --prefer remote
+./ccsync sync --yes
+./ccsync sync --allow-delete
 ```
 
 ## 命令说明
@@ -245,10 +257,10 @@ dist/0.0.2/
 
 ### `sync`
 
-执行本地与远端对比，并根据冲突处理策略完成同步。
+执行本地与远端对比，先生成按文件计划，再根据确认结果执行同步。
 
 ```bash
-./ccsync sync [--tool codex|claude|all] [--prefer local|remote|skip]
+./ccsync sync [--tool codex|claude|all] [--prefer local|remote] [--plan] [--yes] [--allow-delete|--no-delete]
 ```
 
 ## 配置文件说明
@@ -270,12 +282,14 @@ manage_config = true
 manage_user_skills = true
 manage_project_skills = true
 manage_mcp = true
+default_mode = "preview"
+allow_delete = false
 
 [scan]
 project_roots = ["/Users/name/work", "/Users/name/projects"]
 
 [conflict]
-default_mode = "prompt"
+default_resolution = "prompt"
 ```
 
 字段说明：
@@ -289,8 +303,10 @@ default_mode = "prompt"
 - `sync.manage_user_skills`：是否同步用户级 `skill`
 - `sync.manage_project_skills`：是否同步项目级 `skill`
 - `sync.manage_mcp`：是否同步 `MCP`
+- `sync.default_mode`：默认同步模式，`preview` 表示先预览计划
+- `sync.allow_delete`：是否默认允许删除动作进入计划
 - `scan.project_roots`：项目级扫描根目录列表
-- `conflict.default_mode`：冲突默认策略，建议使用 `prompt`
+- `conflict.default_resolution`：冲突默认策略，建议使用 `prompt`
 
 ## 远端存储结构
 
