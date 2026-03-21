@@ -13,8 +13,13 @@ DIST_DIR="${REPO_ROOT}/dist/${VERSION}"
 COMMIT="$(git -C "${REPO_ROOT}" rev-parse --short HEAD)"
 BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
-if ! command -v zip >/dev/null 2>&1; then
-  echo "zip is required to package Windows artifacts" >&2
+ZIP_TOOL=""
+if command -v zip >/dev/null 2>&1; then
+  ZIP_TOOL="zip"
+elif command -v python3 >/dev/null 2>&1; then
+  ZIP_TOOL="python3"
+else
+  echo "zip or python3 is required to package Windows artifacts" >&2
   exit 1
 fi
 
@@ -52,7 +57,11 @@ for platform in "${platforms[@]}"; do
   if [[ "${archive}" == "zip" ]]; then
     (
       cd "${DIST_DIR}"
-      zip -rq "${name}.zip" "${name}"
+      if [[ "${ZIP_TOOL}" == "zip" ]]; then
+        zip -rq "${name}.zip" "${name}"
+      else
+        python3 -m zipfile -c "${name}.zip" "${name}"
+      fi
     )
   else
     tar -C "${DIST_DIR}" -czf "${DIST_DIR}/${name}.tar.gz" "${name}"
