@@ -26,17 +26,17 @@ type BuildInfo struct {
 }
 
 type options struct {
-	configPath        string
-	effectiveConfig   string
-	tool              string
-	format            string
-	prefer            string
-	planOnly          bool
-	yes               bool
-	allowDelete       bool
-	allowDeleteSet    bool
-	noDelete          bool
-	showHelp          bool
+	configPath      string
+	effectiveConfig string
+	tool            string
+	format          string
+	prefer          string
+	planOnly        bool
+	yes             bool
+	allowDelete     bool
+	allowDeleteSet  bool
+	noDelete        bool
+	showHelp        bool
 }
 
 func Run(args []string, info BuildInfo) error {
@@ -93,6 +93,10 @@ func withConfig(args []string, parse func([]string) (options, error), fn func(mo
 			return fmt.Errorf("migrate config %s: %w", cfgPath, err)
 		}
 	}
+	cfg, err = config.ResolveRuntime(cfg)
+	if err != nil {
+		return err
+	}
 	if !opts.allowDeleteSet {
 		opts.allowDelete = cfg.Sync.AllowDelete
 	}
@@ -122,10 +126,6 @@ func cmdInit(args []string) error {
 	fmt.Printf("Remote root [%s]: ", cfg.Remote.Root)
 	if v := readLine(reader); v != "" {
 		cfg.Remote.Root = v
-	}
-	fmt.Printf("Project roots (comma separated, optional): ")
-	if v := readLine(reader); v != "" {
-		cfg.Scan.ProjectRoots = splitCSV(v)
 	}
 	if err := config.Save(cfgPath, cfg); err != nil {
 		return err
@@ -164,6 +164,7 @@ func cmdDiff(cfg model.AppConfig, opts options) error {
 		if err != nil {
 			return err
 		}
+		remoteSnap = filterSnapshot(adapter, remoteSnap)
 		fmt.Println(syncer.RenderDiff(adapter.Name(), syncer.BuildDiff(localSnap, remoteSnap)))
 	}
 	return nil
@@ -203,6 +204,7 @@ func cmdPull(cfg model.AppConfig, opts options) error {
 		if err != nil {
 			return err
 		}
+		remoteSnap = filterSnapshot(adapter, remoteSnap)
 		plan := syncer.BuildPlan(localSnap, remoteSnap, "remote", true)
 		if err := applyLocalPlan(adapter, cfg, plan); err != nil {
 			return err
@@ -232,6 +234,7 @@ func cmdSync(cfg model.AppConfig, opts options) error {
 		if err != nil {
 			return err
 		}
+		remoteSnap = filterSnapshot(adapter, remoteSnap)
 		plan := syncer.BuildPlan(localSnap, remoteSnap, conflictMode, opts.allowDelete)
 		fmt.Println(syncer.RenderPlan(adapter.Name(), plan))
 		if opts.planOnly {
@@ -272,11 +275,7 @@ func cmdDoctor(cfg model.AppConfig, opts options) error {
 		}
 		fmt.Printf("%s: %s (%s)\n", adapter.Name(), state, adapter.BaseDir())
 	}
-	if len(cfg.Scan.ProjectRoots) == 0 {
-		fmt.Println("project_roots: (none)")
-	} else {
-		fmt.Printf("project_roots: %s\n", strings.Join(cfg.Scan.ProjectRoots, ", "))
-	}
+	fmt.Println("sync_scope: home directory skills, top-level mcp files, and instruction files only")
 	fmt.Printf("remote_root: %s\n", cfg.Remote.Root)
 	if cfg.WebDAV.URL == "" {
 		fmt.Println("webdav: missing url")
@@ -316,6 +315,16 @@ func loadConfigOrDefault(path string) (model.AppConfig, bool, error) {
 		return config.DefaultConfig(), false, nil
 	}
 	return cfg, false, fmt.Errorf("load %s: %w", path, err)
+}
+
+func filterSnapshot(adapter adapters.Adapter, snapshot model.Snapshot) model.Snapshot {
+	filtered := model.Snapshot{Tool: snapshot.Tool}
+	for _, item := range snapshot.Items {
+		if adapter.Supports(item) {
+			filtered.Items = append(filtered.Items, item)
+		}
+	}
+	return filtered
 }
 
 func remoteStore(cfg model.AppConfig) (*syncer.RemoteStore, error) {

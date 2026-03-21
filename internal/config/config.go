@@ -23,9 +23,10 @@ func DefaultConfig() model.AppConfig {
 		WebDAV: model.WebDAVConfig{},
 		Remote: model.RemoteConfig{Root: "ccsync"},
 		Sync: model.SyncConfig{
-			ManageConfig:        true,
+			ManageConfig:        false,
+			ManageInstructions:  true,
 			ManageUserSkills:    true,
-			ManageProjectSkills: true,
+			ManageProjectSkills: false,
 			ManageMCP:           true,
 			DefaultMode:         "preview",
 			AllowDelete:         false,
@@ -83,6 +84,8 @@ func Load(path string) (model.AppConfig, error) {
 			switch key {
 			case "manage_config":
 				cfg.Sync.ManageConfig = parseBool(val)
+			case "manage_instructions":
+				cfg.Sync.ManageInstructions = parseBool(val)
 			case "manage_user_skills":
 				cfg.Sync.ManageUserSkills = parseBool(val)
 			case "manage_project_skills":
@@ -111,13 +114,18 @@ func Load(path string) (model.AppConfig, error) {
 		return cfg, err
 	}
 
-	if cfg.WebDAV.Password == "" && cfg.WebDAV.PasswordCmd != "" {
-		out, err := exec.Command("bash", "-lc", cfg.WebDAV.PasswordCmd).Output()
-		if err != nil {
-			return cfg, fmt.Errorf("resolve password_cmd: %w", err)
-		}
-		cfg.WebDAV.Password = strings.TrimSpace(string(out))
+	return cfg, nil
+}
+
+func ResolveRuntime(cfg model.AppConfig) (model.AppConfig, error) {
+	if cfg.WebDAV.Password != "" || cfg.WebDAV.PasswordCmd == "" {
+		return cfg, nil
 	}
+	out, err := exec.Command("bash", "-lc", cfg.WebDAV.PasswordCmd).Output()
+	if err != nil {
+		return cfg, fmt.Errorf("resolve password_cmd: %w", err)
+	}
+	cfg.WebDAV.Password = strings.TrimSpace(string(out))
 	return cfg, nil
 }
 
@@ -140,6 +148,7 @@ root = %s
 
 [sync]
 manage_config = %t
+manage_instructions = %t
 manage_user_skills = %t
 manage_project_skills = %t
 manage_mcp = %t
@@ -158,6 +167,7 @@ default_resolution = %s
 		quote(cfg.WebDAV.PasswordCmd),
 		quote(cfg.Remote.Root),
 		cfg.Sync.ManageConfig,
+		cfg.Sync.ManageInstructions,
 		cfg.Sync.ManageUserSkills,
 		cfg.Sync.ManageProjectSkills,
 		cfg.Sync.ManageMCP,

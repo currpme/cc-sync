@@ -21,6 +21,7 @@ type RemoteConfig struct {
 
 type SyncConfig struct {
 	ManageConfig        bool
+	ManageInstructions  bool
 	ManageUserSkills    bool
 	ManageProjectSkills bool
 	ManageMCP           bool
@@ -40,6 +41,7 @@ type ItemType string
 
 const (
 	ItemConfig       ItemType = "config"
+	ItemInstruction  ItemType = "instruction"
 	ItemUserSkill    ItemType = "user_skill"
 	ItemProjectSkill ItemType = "project_skill"
 	ItemMCP          ItemType = "mcp"

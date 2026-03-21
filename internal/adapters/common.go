@@ -3,11 +3,11 @@ package adapters
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -26,6 +26,7 @@ type Adapter interface {
 	Apply(items []model.ManagedItem, cfg model.AppConfig) error
 	WriteItem(item model.ManagedItem, cfg model.AppConfig) error
 	DeleteItem(item model.ManagedItem, cfg model.AppConfig) error
+	Supports(item model.ManagedItem) bool
 	Exists() bool
 	BaseDir() string
 }
@@ -33,10 +34,6 @@ type Adapter interface {
 func fileHash(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func encodeProjectRef(projectPath string) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(projectPath))
 }
 
 func walkFiles(root string) ([]string, error) {
@@ -71,10 +68,6 @@ func sanitizeConfig(data []byte) []byte {
 func isMCPFile(name string) bool {
 	lower := strings.ToLower(filepath.Base(name))
 	return strings.Contains(lower, "mcp") && (strings.HasSuffix(lower, ".json") || strings.HasSuffix(lower, ".toml") || strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml"))
-}
-
-func projectRoots(cfg model.AppConfig) []string {
-	return cfg.Scan.ProjectRoots
 }
 
 func relPathOrBase(root, full string) string {
@@ -121,6 +114,54 @@ func configCandidates(baseDir string, baseNames []string) ([]string, error) {
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+func mcpCandidates(baseDir string) ([]string, error) {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !isMCPFile(name) {
+			continue
+		}
+		files = append(files, filepath.Join(baseDir, name))
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func normalizeManagedPath(relPath string) string {
+	return path.Clean(strings.TrimPrefix(filepath.ToSlash(relPath), "/"))
+}
+
+func exactManagedPath(relPath, want string) bool {
+	return normalizeManagedPath(relPath) == want
+}
+
+func managedSuffix(relPath, prefix string) (string, bool) {
+	normalized := normalizeManagedPath(relPath)
+	if !strings.HasPrefix(normalized, prefix) {
+		return "", false
+	}
+	suffix := strings.TrimPrefix(normalized, prefix)
+	suffix = strings.TrimPrefix(suffix, "/")
+	if suffix == "" {
+		return "", false
+	}
+	cleaned := path.Clean(suffix)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", false
+	}
+	return cleaned, true
 }
 
 func isManagedConfigName(name string, baseNames []string) bool {

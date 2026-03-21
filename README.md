@@ -1,10 +1,10 @@
 # ccsync
 
-`ccsync` 是一个基于 Go 的 CLI 工具，用来通过 `WebDAV` 同步 `Codex` 和 `Claude Code` 的基础配置、用户级/项目级 `skill` 以及 `MCP` 配置。
+`ccsync` 是一个基于 Go 的 CLI 工具，用来通过 `WebDAV` 同步 `Codex` 和 `Claude Code` 的用户级 `skills`、顶层提示文件以及 `MCP` 配置。
 
 当前版本面向个人开发者，优先解决这几个问题：
 
-- 多台机器之间同步 Codex / Claude Code 的可版本化配置
+- 多台机器之间同步 Codex / Claude Code 的可版本化工作区素材
 - 将用户自定义 `skills` 统一备份到 WebDAV
 - 在新机器上快速恢复基础工作环境
 
@@ -12,19 +12,17 @@
 
 已实现的能力：
 
-- 同步 `Codex` 和 `Claude Code` 的基础配置文件
+- 同步 `~/.codex/AGENTS.md` 和 `~/.claude/claude.md`
 - 同步用户级 `skills`
-- 同步项目级 `skills`
-- 同步 `MCP` 配置文件
+- 同步工具基础目录顶层的 `MCP` 配置文件
 - 使用 `WebDAV` 作为远端存储
 - 支持本地扫描、远端对比、上传、拉取、同步和连通性检查
 
 当前同步原则：
 
-- 不同步 `API Key`、`token`、`password` 等敏感字段
-- 不同步认证态、日志、历史记录、缓存、sqlite 状态文件
 - 忽略 `Codex` 的系统级 `skill` 目录：`.codex/skills/.system`
-- 项目级 `skill` 只扫描你显式配置的 `project_roots`
+- 只同步用户主目录下的 `~/.codex` 和 `~/.claude` / `~/.config/claude` / `~/.claude-code`
+- 不同步项目目录下的任何配置、`skills` 或 `MCP`
 
 ## 项目结构
 
@@ -117,7 +115,6 @@ dist/0.0.5/
 - WebDAV 用户名
 - WebDAV 密码
 - 远端根目录
-- 项目扫描根目录
 
 默认配置文件位置：
 
@@ -278,15 +275,16 @@ password_cmd = ""
 root = "ccsync"
 
 [sync]
-manage_config = true
+manage_config = false
+manage_instructions = true
 manage_user_skills = true
-manage_project_skills = true
+manage_project_skills = false
 manage_mcp = true
 default_mode = "preview"
 allow_delete = false
 
 [scan]
-project_roots = ["/Users/name/work", "/Users/name/projects"]
+project_roots = []
 
 [conflict]
 default_resolution = "prompt"
@@ -297,15 +295,16 @@ default_resolution = "prompt"
 - `webdav.url`：WebDAV 根地址
 - `webdav.username`：WebDAV 用户名
 - `webdav.password`：WebDAV 密码或应用密码
-- `webdav.password_cmd`：可选，用命令动态获取密码
+- `webdav.password_cmd`：可选，用命令动态获取密码；只在运行时解析，不会被迁移逻辑回写成明文密码
 - `remote.root`：远端同步根目录
-- `sync.manage_config`：是否同步基础配置
+- `sync.manage_config`：遗留字段，当前版本不再同步工具配置文件
+- `sync.manage_instructions`：是否同步 `AGENTS.md` / `claude.md`
 - `sync.manage_user_skills`：是否同步用户级 `skill`
-- `sync.manage_project_skills`：是否同步项目级 `skill`
+- `sync.manage_project_skills`：遗留字段，当前版本不再同步项目级 `skill`
 - `sync.manage_mcp`：是否同步 `MCP`
 - `sync.default_mode`：默认同步模式，`preview` 表示先预览计划
 - `sync.allow_delete`：是否默认允许删除动作进入计划
-- `scan.project_roots`：项目级扫描根目录列表
+- `scan.project_roots`：遗留字段，当前版本忽略
 - `conflict.default_resolution`：冲突默认策略，建议使用 `prompt`
 
 ## 远端存储结构
@@ -316,17 +315,13 @@ WebDAV 上的目录结构大致如下：
 ccsync/
   codex/
     manifest.json
-    config/config.toml
-    config/config.toml.bak
+    instructions/AGENTS.md
     skills/user/...
-    skills/projects/<project-ref>/...
     mcp/...
   claude/
     manifest.json
-    config/settings.json
-    config/settings.json.bak
+    instructions/claude.md
     skills/user/...
-    skills/projects/<project-ref>/...
     mcp/...
 ```
 
@@ -342,11 +337,9 @@ ccsync/
 
 默认处理：
 
-- `~/.codex/config.toml`
-- `~/.codex/config.toml.*` 这类派生配置文件，例如 `config.toml.bak`
+- `~/.codex/AGENTS.md`（如果存在）
 - `~/.codex/skills` 下的用户自定义内容
-- `~/.codex` 下文件名包含 `mcp` 的配置文件
-- 项目目录中的 `.codex/skills`
+- `~/.codex` 顶层文件名包含 `mcp` 的配置文件
 
 忽略：
 
@@ -369,23 +362,23 @@ ccsync/
 
 默认处理：
 
-- 配置文件：`config.toml`、`settings.json`、`settings.toml` 及其 `.*` 派生文件，例如 `settings.json.bak`
-- `skills/`
-- 文件名包含 `mcp` 的配置文件
-- 项目目录中的 `.claude/skills`
+- 顶层提示文件：`claude.md`（如果存在）
+- `skills/`（例如 `~/.claude/skills`、`~/.config/claude/skills` 或 `~/.claude-code/skills`）
+- 基础目录顶层文件名包含 `mcp` 的配置文件
 
 ## 配置写回策略
 
-基础配置不是简单整文件覆盖，而是：
+当前托管文件都按文件整体写回：
 
-- 对托管字段执行更新
-- 尽量保留已有文件中的非托管内容
-- 对 `TOML` 和 `JSON` 做基础合并
+- `AGENTS.md`
+- `claude.md`
+- `skills/` 下的用户文件
+- 顶层 `mcp*.(json|toml|yaml|yml)` 文件
 
 注意：
 
-- 当前合并逻辑是轻量实现，适合常见配置场景
-- 如果目标文件结构非常复杂，建议先 `diff` 再 `pull`
+- 不再同步 `config.toml`、`settings.json` 等工具配置文件
+- 远端清单中的项目级条目和不受支持的路径会在本地侧被忽略
 
 ## 已验证内容
 
@@ -403,10 +396,8 @@ ccsync/
 当前版本仍有这些限制：
 
 - 还没有真实 Claude Code 环境下的完整兼容性验证
-- 敏感字段过滤采用关键字过滤，不是语义级解析
 - 远端暂未实现历史快照、版本回滚和远端文件枚举命令
 - 冲突处理目前是工具级决策，不是逐条目交互式合并
-- 项目级 `skill` 需要手动配置 `project_roots` 才会扫描
 
 ## 建议用法
 
